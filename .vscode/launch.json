@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Python: open_tga",
+        "type": "python",
+        "request": "launch",
+        "program": "${workspaceFolder}/open_tga.py",
+        "console": "integratedTerminal",
+        "args": ["tenofovir"]
+      }
+    ]
+  }
+  
