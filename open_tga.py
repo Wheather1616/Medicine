@@ -1,38 +1,73 @@
+#open_tga.py
 #!/usr/bin/env python3
-import argparse
 import requests
 from bs4 import BeautifulSoup
-import webbrowser
-from urllib.parse import urljoin
+import sqlite3
+import os
+from urllib.parse import urljoin, quote_plus
 
-def open_first_tga_result(drug_name: str):
-    # 1. Fetch the search results page
-    base = "https://www.tga.gov.au"
-    resp = requests.get(
-        urljoin(base, "/search"),
-        params={"keywords": drug_name, "submit": "Search"},
-        timeout=10,
-    )
-    resp.raise_for_status()
+def get_medicine_name(drug_name: str) -> str:
+    import re
+    base = "https://medsinfo.com.au"
+    first_letter = drug_name.strip()[0].upper()
+    id_target = f"row_{drug_name.strip().replace(' ', '_')}_CMI"
 
-    # 2. Parse the HTML and find the first link under <ul class="health-listing">
-    soup = BeautifulSoup(resp.text, "html.parser")
-    first_link = soup.select_one("ul.health-listing li a")
-    if not first_link or not first_link.get("href"):
-        print(f"No results found for “{drug_name}”.")
-        return
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; MedsInfoRowSearch/1.0)"
+    }
 
-    # 3. Build the full URL and open it
-    href = first_link["href"]
-    full_url = urljoin(base, href)
-    print(f"Opening: {full_url}")
-    webbrowser.open(full_url)
+    page = 1
+    while True:
+        url = f"{base}/consumer-information/A-To-Z-Index/{first_letter}?page={page}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            print(f"[ERROR] Failed to load: {e}")
+            return None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        if soup.find("tr", id=id_target):
+            return drug_name.strip()
+
+        if not soup.find("tr"):
+            break
+
+        page += 1
+
+    print(f"No match found for “{drug_name}”.")
+    return None
+
+
+
+def insert_into_database(medicine_name: str):
+    icloud_path = os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs")
+    db_path = os.path.join(icloud_path, "Medicine.db")
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS medicines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL
+        )
+    ''')
+
+    cursor.execute('INSERT INTO medicines (name) VALUES (?)', (medicine_name,))
+    conn.commit()
+    conn.close()
+
+    print(f"✅ Added: {medicine_name}")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Search TGA.gov.au and open the first result for a given medicine"
-    )
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Search HealthDirect and save medicine name to iCloud DB.")
     parser.add_argument("medicine", help="Medicine name to search for (e.g. tenofovir)")
     args = parser.parse_args()
 
-    open_first_tga_result(args.medicine)
+    name = get_medicine_name(args.medicine)
+    if name:
+        insert_into_database(name)
