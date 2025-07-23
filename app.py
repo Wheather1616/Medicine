@@ -173,19 +173,21 @@ def extract_effects_by_strong_order(section):
 
     return common, serious
 
+
 def get_medicine(drug=None, ing_query=None):
     """
     Fetch medicine info by name or active ingredient from medsinfo.com.au.
     Either `drug` or `ing_query` must be provided.
     """
     base = "https://medsinfo.com.au"
+    # Determine search term
     drug_query = drug.strip().lower() if drug else None
     ing_query_lc = ing_query.strip().lower() if ing_query else None
-
-    if not drug_query and not ing_query:
+    search_term = drug_query or ing_query_lc
+    if not search_term:
         return None
 
-    first_char = (drug_query or ing_query)[0].upper()
+    first_char = search_term[0].upper()
     headers = {"User-Agent": "Mozilla/5.0"}
     page = 1
 
@@ -200,32 +202,14 @@ def get_medicine(drug=None, ing_query=None):
             break
 
         soup = BeautifulSoup(resp.text, 'html.parser')
-        rows = soup.select('table tbody tr.desktop-only')
-        if not rows:
+        # Find all document links on this page
+        links = [a for a in soup.find_all('a', href=True) if '/document/' in a['href']]
+        if not links:
+            # No more entries
             break
 
-        for row in rows:
-            name_tag = row.select_one('td.col2 a')
-            ingredient_tag = row.select_one('td.col2 small.ingredient')
-            if not name_tag or not ingredient_tag:
-                continue
-
-            name_text = name_tag.get_text(strip=True)
-            ingredient_text = ingredient_tag.get_text(strip=True)
-            name_lc = name_text.lower()
-            ingredient_lc = ingredient_text.lower()
-            href = name_tag.get('href')
-            detail_url = urljoin(base, href)
-
-            match_name = drug_query and (drug_query in name_lc)
-            match_ing = ing_query_lc and (ing_query_lc in ingredient_lc)
-
-            if not (match_name or match_ing):
-                continue
-
-            app.logger.info(f"[GET_MEDICINE] Matched index: {name_text} ({ingredient_text}) -> {detail_url}")
-            
-            # Fetch details from document page
+        for a in links:
+            detail_url = urljoin(base, a['href'])
             try:
                 r2 = requests.get(detail_url, headers=headers, timeout=10)
                 r2.raise_for_status()
@@ -238,7 +222,32 @@ def get_medicine(drug=None, ing_query=None):
                         or doc_soup.find('article', class_='document-page') \
                         or doc_soup
             title_tag = info_div.find('h1')
-            title_text = title_tag.get_text(strip=True) if title_tag else name_text
+            title_text = title_tag.get_text(strip=True) if title_tag else ''
+            title_lc = title_text.lower()
+
+            # Extract active ingredient string
+            ing_text = None
+            # Primary extraction
+            ing_section = extract_section(doc_soup, ['Active ingredient'])
+            if ing_section:
+                ing_text = ing_section
+            else:
+                # regex fallback
+                ing_text = _fallback_regex(doc_soup, r'Active ingredient:?\s*(.+)')
+            ing_lc = ing_text.lower() if ing_text else ''
+
+            # Check match
+            match_name = drug_query and (drug_query in title_lc)
+            match_ing = ing_query_lc and (ing_query_lc in ing_lc)
+            if not (match_name or match_ing):
+                continue
+
+            app.logger.info(f"[GET_MEDICINE] Matched detail page: {detail_url}")
+            # Proceed to extract details
+            # Use original extraction logic below
+            title = title_text or drug.strip()
+            # Ingredient is already extracted as ing_text
+            ing = ing_text
 
             # Dosage extraction
             dose_list = []
@@ -263,8 +272,10 @@ def get_medicine(drug=None, ing_query=None):
             effects = extract_side_effects_from_soup(doc_soup)
             common_side_effects = ', '.join(effects['common']) if effects['common'] else None
             serious_side_effects = ', '.join(effects['serious']) if effects['serious'] else None
+
             over = extract_section(doc_soup, ['If you take too much', 'Overdose'])
 
+            # Interactions
             inter_list = []
             hdrs = doc_soup.find_all(
                 lambda tag: tag.name in ('h2', 'h3') and 'other medicines' in tag.get_text(strip=True).lower()
@@ -282,18 +293,18 @@ def get_medicine(drug=None, ing_query=None):
             interactions = '\n'.join(f'- {item}' for item in inter_list) \
                 if inter_list else extract_section(doc_soup, ['What if I am taking other medicines'])
 
-            # PDF
+            # PDF download
             pdf_href = None
             a_pdf = doc_soup.find('a', href=re.compile(r'format=pdf', re.I)) \
                     or doc_soup.find('a', string=re.compile(r'Download PDF', re.I))
             if a_pdf and a_pdf.get('href'):
                 pdf_href = urljoin(base, a_pdf['href'])
-            pdf_file = download_pdf(pdf_href, title_text) if pdf_href else None
+            pdf_file = download_pdf(pdf_href, title) if pdf_href else None
 
             return {
                 'url': detail_url,
-                'name': title_text,
-                'ingredient': ingredient_text,
+                'name': title,
+                'ingredient': ing,
                 'dosage': dose,
                 'contraindications': cont,
                 'warnings': warn,
@@ -305,6 +316,7 @@ def get_medicine(drug=None, ing_query=None):
                 'pdf_filename': pdf_file
             }
 
+        # Next page if not found
         page += 1
 
     return None
