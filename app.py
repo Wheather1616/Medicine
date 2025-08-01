@@ -349,7 +349,7 @@ def add():
 
 
     search_desc = name_query or ing_query
-    app.logger.info(f"[ADD] Lookup for “{search_desc}” (name={name_query}, ingredient={ing_query})")
+    app.logger.info(f"[ADD] Lookup 4 for “{search_desc}” (name={name_query}, ingredient={ing_query})")
 
     with sqlite3.connect(DB_PATH) as conn:
         try:
