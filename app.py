@@ -7,6 +7,7 @@ import re
 import os
 import traceback
 from urllib.parse import urljoin, urlparse
+import string
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -174,18 +175,17 @@ def extract_effects_by_strong_order(section):
     return common, serious
 
 
-
-
 def get_medicine(drug):
-    base   = "https://medsinfo.com.au"
-    lower  = drug.strip().lower()
+    base    = "https://medsinfo.com.au"
+    lower   = drug.strip().lower()
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    # build an order of letters: query’s first letter, then the rest A–Z
-    first = drug.strip()[0].upper()
+    # Build search order: first your drug’s initial, then the rest A–Z
+    first       = drug.strip()[0].upper()
     all_letters = [first] + [L for L in string.ascii_uppercase if L != first]
 
     detail = None
+
     for letter in all_letters:
         page = 1
         while True:
@@ -200,136 +200,174 @@ def get_medicine(drug):
 
             soup = BeautifulSoup(r.text, 'html.parser')
 
-            # look for either the link text or its <small class="ingredient">
-            for a in soup.find_all('a', href=True):
-                if '/document/' not in a['href']:
-                    continue
+            # Collect all candidate document links
+            doc_links = [
+                a for a in soup.find_all('a', href=True)
+                if '/document/' in a['href']
+            ]
+            # No more entries for this letter → stop paging
+            if not doc_links:
+                app.logger.info(f"No more documents under '{letter}' at page {page}")
+                break
 
+            # Check each link for either the drug-name or active-ingredient match
+            for a in doc_links:
                 link_text = a.get_text(strip=True).lower()
                 ing_tag   = a.find_next_sibling('small', class_='ingredient')
                 ing_text  = ing_tag.get_text(strip=True).lower() if ing_tag else ''
 
-                if (lower == link_text or lower in link_text or
-                    lower == ing_text  or lower in ing_text):
+                if (
+                    lower == link_text or lower in link_text or
+                    lower == ing_text  or lower in ing_text
+                ):
                     detail = urljoin(base, a['href'])
                     break
 
             if detail:
-                break
-
-            # no match on this page?
-            if not soup.find('table'):
-                # no results at all for this letter
-                break
+                break  # found it on this page
             page += 1
 
         if detail:
-            # once we found it, stop looping letters
-            break
+            break  # stop trying other letters
 
     if not detail:
         return None
 
-        app.logger.info(f"Detail page: {detail}")
-        try:
-            r2 = requests.get(detail, headers=headers, timeout=10)
-            r2.raise_for_status()
-        except Exception:
-            app.logger.error(traceback.format_exc())
-            return None
+    # Fetch detail page and scrape as before
+    app.logger.info(f"Detail page: {detail}")
+    try:
+        r2 = requests.get(detail, headers=headers, timeout=10)
+        r2.raise_for_status()
+    except Exception:
+        app.logger.error(traceback.format_exc())
+        return None
 
-        s2 = BeautifulSoup(r2.text, 'html.parser')
-        info_div = s2.find('div', class_='drug-info') or s2.find('article', class_='document-page') or s2
-        title = info_div.find('h1').get_text(strip=True) if info_div.find('h1') else drug.strip()
+    s2 = BeautifulSoup(r2.text, 'html.parser')
+    info_div = (
+        s2.find('div', class_='drug-info')
+        or s2.find('article', class_='document-page')
+        or s2
+    )
+    title = (
+        info_div.find('h1').get_text(strip=True)
+        if info_div.find('h1')
+        else drug.strip()
+    )
 
-        ing = None
-        ex_headers = s2.find_all(
-            lambda tag: tag.name in ('h2', 'h3') and any(
-                kw in tag.get_text(strip=True).lower() for kw in ['why am i taking', 'why am i using']
-            )
+    # === Active ingredient ===
+    ing = None
+    ex_headers = s2.find_all(
+        lambda tag: tag.name in ('h2', 'h3') and any(
+            kw in tag.get_text(strip=True).lower()
+            for kw in ['why am i taking', 'why am i using']
         )
-        if ex_headers:
-            for tag in ex_headers[0].find_all_next():
-                if tag.name in ('h2', 'h3'):
+    )
+    if ex_headers:
+        for tag in ex_headers[0].find_all_next():
+            if tag.name in ('h2', 'h3'):
+                break
+            if tag.name == 'p':
+                txt = tag.get_text(strip=True).lower()
+                if 'contains the active ingredient' in txt:
+                    m = re.search(
+                        r'contains the active ingredient(?:s)?\s*(.+?)\.',
+                        txt, re.IGNORECASE
+                    )
+                    if m:
+                        parts = re.split(r' and |,\s*', m.group(1))
+                        ing = ', '.join(p.strip() for p in parts)
                     break
-                if tag.name == 'p':
-                    text_p = tag.get_text(strip=True)
-                    if 'contains the active ingredient' in text_p.lower():
-                        m = re.search(r'contains the active ingredient(?:s)?\s*(.+?)\.', text_p, re.IGNORECASE)
-                        if m:
-                            parts = re.split(r' and |,\s*', m.group(1))
-                            ing = ', '.join(p.strip() for p in parts)
-                        break
-        if not ing:
-            ing = extract_section(s2, ['Active ingredient']) or _fallback_regex(s2, r'Active ingredient:?\s*(.+)')
+    if not ing:
+        ing = extract_section(s2, ['Active ingredient']) \
+              or _fallback_regex(s2, r'Active ingredient:?\s*(.+)')
 
-        dose_list = []
-        dose_headers = s2.find_all(lambda tag: tag.name in ('h2', 'h3') and any(
-            kw in tag.get_text(strip=True).lower() for kw in ['how do i use', 'how do i take', 'how to take']
-        ))
-        if dose_headers:
-            hdr = dose_headers[0]
-            sib = hdr
-            while sib:
-                sib = sib.find_next_sibling()
-                if not sib:
-                    break
-                if sib.name == 'ul':
-                    for li in sib.find_all('li'):
-                        txt = li.get_text(separator=' ', strip=True)
-                        if txt:
-                            dose_list.append(txt)
-                    break
-        dose = dose_list if dose_list else extract_section(s2, ['How to take', 'How do I use', 'How do I take'])
-        cont = extract_section(s2, ['Do not use if'])
-        warn = extract_warnings(s2)
-        side_effects = extract_side_effects_from_soup(s2)
-        common_side_effects = ', '.join(side_effects['common']) if side_effects['common'] else None
-        serious_side_effects = ', '.join(side_effects['serious']) if side_effects['serious'] else None
-
-        over = extract_section(s2, ['If you take too much', 'Overdose'])
-
-        inter_list = []
-        headers_list = s2.find_all(
-            lambda tag: tag.name in ('h2', 'h3') and 'other medicines' in tag.get_text(strip=True).lower()
+    # === Dosage ===
+    dose_list = []
+    dose_headers = s2.find_all(
+        lambda tag: tag.name in ('h2', 'h3') and any(
+            kw in tag.get_text(strip=True).lower()
+            for kw in ['how do i use', 'how do i take', 'how to take']
         )
-        target = headers_list[1] if len(headers_list) > 1 else (headers_list[0] if headers_list else None)
-        if target:
-            sib = target
-            while sib:
-                sib = sib.find_next_sibling()
-                if not sib:
-                    break
-                if sib.name == 'ul':
-                    for li in sib.find_all('li'):
-                        txt = li.get_text(separator=' ', strip=True)
-                        if txt:
-                            inter_list.append(txt)
-                    break
-        interactions = '\n'.join(f'- {item}' for item in inter_list) if inter_list else extract_section(s2, ['What if I am taking other medicines'])
+    )
+    if dose_headers:
+        sib = dose_headers[0]
+        while True:
+            sib = sib.find_next_sibling()
+            if not sib or sib.name == 'h2' or sib.name == 'h3':
+                break
+            if sib.name == 'ul':
+                for li in sib.find_all('li'):
+                    txt = li.get_text(separator=' ', strip=True)
+                    if txt:
+                        dose_list.append(txt)
+                break
+    dose = (
+        dose_list
+        if dose_list
+        else extract_section(s2, ['How to take','How do I use','How do I take'])
+    )
 
-        pdf_href = None
-        a_pdf = s2.find('a', href=re.compile(r'format=pdf', re.I)) or s2.find('a', string=re.compile(r'Download PDF', re.I))
-        if a_pdf and a_pdf.get('href'):
-            pdf_href = urljoin(base, a_pdf['href'])
-        pdf_file = download_pdf(pdf_href, title) if pdf_href else None
+    # === Other sections ===
+    cont  = extract_section(s2, ['Do not use if'])
+    warn  = extract_warnings(s2)
+    se    = extract_side_effects_from_soup(s2)
+    common_side_effects  = ', '.join(se['common']) if se['common'] else None
+    serious_side_effects = ', '.join(se['serious']) if se['serious'] else None
+    over = extract_section(s2, ['If you take too much','Overdose'])
 
-        return {
-            'url': detail,
-            'name': title,
-            'ingredient': ing,
-            'dosage': dose,
-            'contraindications': cont,
-            'warnings': warn,
-            'interactions': interactions,
-            'common_side_effects': common_side_effects,
-            'serious_side_effects': serious_side_effects,
-            'overdose_info': over,
-            'pdf_url': pdf_href,
-            'pdf_filename': pdf_file
-        }
-    return None
+    # === Interactions ===
+    inter_list = []
+    headers_list = s2.find_all(
+        lambda tag: tag.name in ('h2','h3')
+                    and 'other medicines' in tag.get_text(strip=True).lower()
+    )
+    target = (
+        headers_list[1]
+        if len(headers_list) > 1
+        else (headers_list[0] if headers_list else None)
+    )
+    if target:
+        sib = target
+        while True:
+            sib = sib.find_next_sibling()
+            if not sib or sib.name in ('h2','h3'):
+                break
+            if sib.name == 'ul':
+                for li in sib.find_all('li'):
+                    txt = li.get_text(separator=' ', strip=True)
+                    if txt:
+                        inter_list.append(txt)
+                break
+    interactions = (
+        '\n'.join(f'- {item}' for item in inter_list)
+        if inter_list
+        else extract_section(s2, ['What if I am taking other medicines'])
+    )
 
+    # === PDF download ===
+    pdf_href = None
+    a_pdf = (
+        s2.find('a', href=re.compile(r'format=pdf', re.I))
+        or s2.find('a', string=re.compile(r'Download PDF', re.I))
+    )
+    if a_pdf and a_pdf.get('href'):
+        pdf_href = urljoin(base, a_pdf['href'])
+    pdf_file = download_pdf(pdf_href, title) if pdf_href else None
+
+    return {
+        'url': detail,
+        'name': title,
+        'ingredient': ing,
+        'dosage': dose,
+        'contraindications': cont,
+        'warnings': warn,
+        'interactions': interactions,
+        'common_side_effects': common_side_effects,
+        'serious_side_effects': serious_side_effects,
+        'overdose_info': over,
+        'pdf_url': pdf_href,
+        'pdf_filename': pdf_file
+    }
 def clean_value(val):
     if isinstance(val, list):
         return ' '.join(
