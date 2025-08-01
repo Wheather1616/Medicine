@@ -20,6 +20,7 @@ DB_PATH = os.getenv("MEDICINE_DB_PATH", "/home/ubuntu/med-api/Medicine.db")
 PDF_DIR = os.getenv("MEDICINE_PDF_DIR", "/home/ubuntu/med-api/pdfs")
 os.makedirs(PDF_DIR, exist_ok=True)
 
+
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('''
@@ -47,12 +48,15 @@ def init_db():
         if "serious_side_effects" not in columns:
             conn.execute("ALTER TABLE medicines ADD COLUMN serious_side_effects TEXT")
 
+
 def extract_section(soup, heading_variants):
     header = None
+    # Look for H2/H3 headings
     for variant in heading_variants:
         header = soup.find(lambda tag: tag.name in ('h2', 'h3') and variant.lower() in tag.get_text(strip=True).lower())
         if header:
             break
+    # Fallback: <p><strong> …</strong>
     if not header:
         for variant in heading_variants:
             for p in soup.find_all('p'):
@@ -64,6 +68,7 @@ def extract_section(soup, heading_variants):
                 break
     if not header:
         return None
+
     parts = []
     for sib in header.find_next_siblings():
         if sib.name in ('h2', 'h3') or (sib.name == 'p' and sib.find('strong')):
@@ -72,7 +77,6 @@ def extract_section(soup, heading_variants):
         if txt:
             parts.append(txt)
     return "\n".join(parts) if parts else None
-
 def download_pdf(pdf_url, name):
     try:
         resp = requests.get(pdf_url, stream=True, timeout=10)
@@ -87,7 +91,6 @@ def download_pdf(pdf_url, name):
     except Exception:
         app.logger.error("PDF download failed:\n" + traceback.format_exc())
         return None
-
 def _fallback_regex(soup, pattern):
     m = re.search(pattern, soup.get_text(separator='\n'), re.IGNORECASE)
     return m.group(1).strip() if m else None
@@ -113,66 +116,76 @@ def extract_warnings(soup):
 
     return warnings
 
+def extract_bottom_left_cell(table):
+    rows = table.find_all('tr')
+    if not rows:
+        return None
+    last_row = rows[-1]
+    cells = last_row.find_all(['td', 'th'])
+    if not cells:
+        return None
+    return cells[0].get_text(strip=True)
+
 def extract_side_effects_from_soup(soup):
-    # Find all sections with id ending in -body
-    sections = soup.find_all('section', id=re.compile(r'.*-body$'))
+    # Find the h3 header anywhere
+    header = soup.find(
+        lambda tag: tag.name == 'h3' and 'are there any side effects' in tag.get_text(strip=True).lower()
+    )
+    if not header:
+        return {'common': [], 'serious': []}
 
-    for section in sections:
-        h3 = section.find('h3')
-        if h3 and 'are there any side effects' in h3.get_text(strip=True).lower():
-            return extract_effects_from_section(section)
+    # Collect the next two tables (stop at next h2/h3)
+    tables = []
+    for sib in header.find_all_next():
+        if sib.name == 'table':
+            tables.append(sib)
+            if len(tables) == 2:
+                break
+        if sib.name in ('h2','h3') and tables:
+            break
 
-    return {'common': [], 'serious': []}
-
-def extract_effects_from_section(section):
-    common = []
-    serious = []
-
-    # First, check if there are tables
-    tables = section.find_all('table')
     if len(tables) >= 2:
-        common = extract_side_effects_from_table(tables[0])
-        serious = extract_side_effects_from_table(tables[1])
+        # Extract only bottom-left cell from each table
+        common  = extract_bottom_left_cell(tables[0])
+        serious = extract_bottom_left_cell(tables[1])
     else:
-        # Fallback to strong-tag method
-        common, serious = extract_effects_by_strong_order(section)
+        # Fallback: use first entry from strong-order lists
+        common_list, serious_list = extract_effects_by_strong_order(header)
+        common  = common_list[0] if common_list else None
+        serious = serious_list[0] if serious_list else None
 
     return {'common': common, 'serious': serious}
+
+
 
 def extract_side_effects_from_table(table):
     effects = []
     for row in table.find_all('tr'):
-        for cell in row.find_all(['td', 'th']):
+        for cell in row.find_all(['td','th']):
             text = cell.get_text(separator=' ', strip=True)
             if text:
                 effects.append(text)
     return effects
 
-def extract_effects_by_strong_order(section):
+
+def extract_effects_by_strong_order(start_tag):
     common = []
     serious = []
-
-    strong_tags = section.find_all('strong')
-
-    for i, tag in enumerate(strong_tags[:2]):  # Use only first two
+    strong_tags = start_tag.find_all('strong')[:2]
+    for i, tag in enumerate(strong_tags):
         next_text = ''
         for sibling in tag.next_siblings:
-            if isinstance(sibling, str):
-                next_text = sibling.strip()
-                if next_text:
-                    break
-            elif sibling.name is None and sibling.string:
-                next_text = sibling.string.strip()
-                if next_text:
-                    break
-
+            if isinstance(sibling, str) and sibling.strip():
+                next_text = sibling.strip(); break
+            elif sibling.name is None and sibling.string and sibling.string.strip():
+                next_text = sibling.string.strip(); break
         effects = [s.strip().strip('.') for s in next_text.split(',') if s.strip()]
         if i == 0:
             common.extend(effects)
-        elif i == 1:
+        else:
             serious.extend(effects)
-
     return common, serious
+
 
 
 def get_medicine(drug):
