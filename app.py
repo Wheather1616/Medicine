@@ -196,10 +196,23 @@ def get_medicine(drug):
         soup = BeautifulSoup(r.text, 'html.parser')
         detail = None
         for a in soup.find_all('a', href=True):
-            text = a.get_text(strip=True).lower()
-            if (lower == text or lower in text) and '/document/' in a['href']:
-                detail = urljoin(base, a['href'])
+            href = a['href']
+            # only care about links into the /document/ pages
+            if '/document/' not in href:
+                continue
+
+            link_text = a.get_text(strip=True).lower()
+
+            # look for an immediate <small class="ingredient"> sibling
+            ing_tag = a.find_next_sibling('small', class_='ingredient')
+            ing_text = ing_tag.get_text(strip=True).lower() if ing_tag else ''
+
+            # match if the query equals or is contained in either
+            if (lower == link_text or lower in link_text or
+                lower == ing_text  or lower in ing_text):
+                detail = urljoin(base, href)
                 break
+
         if not detail:
             if not soup.find('table'):
                 break
