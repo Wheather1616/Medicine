@@ -177,47 +177,58 @@ def extract_effects_by_strong_order(section):
 
 
 def get_medicine(drug):
-    base = "https://medsinfo.com.au"
-    first = drug.strip()[0].upper()
-    lower = drug.strip().lower()
+    base   = "https://medsinfo.com.au"
+    lower  = drug.strip().lower()
     headers = {"User-Agent": "Mozilla/5.0"}
-    page = 1
 
-    while True:
-        idx_url = f"{base}/consumer-information/A-To-Z-Index/{first}?page={page}"
-        app.logger.info(f"[GET_MEDICINE] Fetching {idx_url}")
-        try:
-            r = requests.get(idx_url, headers=headers, timeout=10)
-            r.raise_for_status()
-        except Exception:
-            app.logger.error(traceback.format_exc())
-            break
+    # build an order of letters: query’s first letter, then the rest A–Z
+    first = drug.strip()[0].upper()
+    all_letters = [first] + [L for L in string.ascii_uppercase if L != first]
 
-        soup = BeautifulSoup(r.text, 'html.parser')
-        detail = None
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            # only care about links into the /document/ pages
-            if '/document/' not in href:
-                continue
-
-            link_text = a.get_text(strip=True).lower()
-
-            # look for an immediate <small class="ingredient"> sibling
-            ing_tag = a.find_next_sibling('small', class_='ingredient')
-            ing_text = ing_tag.get_text(strip=True).lower() if ing_tag else ''
-
-            # match if the query equals or is contained in either
-            if (lower == link_text or lower in link_text or
-                lower == ing_text  or lower in ing_text):
-                detail = urljoin(base, href)
+    detail = None
+    for letter in all_letters:
+        page = 1
+        while True:
+            idx_url = f"{base}/consumer-information/A-To-Z-Index/{letter}?page={page}"
+            app.logger.info(f"[GET_MEDICINE] Fetching {idx_url}")
+            try:
+                r = requests.get(idx_url, headers=headers, timeout=10)
+                r.raise_for_status()
+            except Exception:
+                app.logger.error(traceback.format_exc())
                 break
 
-        if not detail:
+            soup = BeautifulSoup(r.text, 'html.parser')
+
+            # look for either the link text or its <small class="ingredient">
+            for a in soup.find_all('a', href=True):
+                if '/document/' not in a['href']:
+                    continue
+
+                link_text = a.get_text(strip=True).lower()
+                ing_tag   = a.find_next_sibling('small', class_='ingredient')
+                ing_text  = ing_tag.get_text(strip=True).lower() if ing_tag else ''
+
+                if (lower == link_text or lower in link_text or
+                    lower == ing_text  or lower in ing_text):
+                    detail = urljoin(base, a['href'])
+                    break
+
+            if detail:
+                break
+
+            # no match on this page?
             if not soup.find('table'):
+                # no results at all for this letter
                 break
             page += 1
-            continue
+
+        if detail:
+            # once we found it, stop looping letters
+            break
+
+    if not detail:
+        return None
 
         app.logger.info(f"Detail page: {detail}")
         try:
