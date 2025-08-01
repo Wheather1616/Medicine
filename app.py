@@ -118,13 +118,11 @@ def extract_warnings(soup):
 
 def extract_bottom_left_cell(table):
     rows = table.find_all('tr')
-    if not rows:
-        return None
+    if not rows: return None
     last_row = rows[-1]
     cells = last_row.find_all(['td', 'th'])
-    if not cells:
-        return None
-    return cells[0].get_text(strip=True)
+    return cells[0].get_text(strip=True) if cells else None
+
 
 def extract_side_effects_from_soup(soup):
     # Find the h3 header anywhere
@@ -323,9 +321,9 @@ def get_medicine(drug):
     # === Other sections ===
     cont  = extract_section(s2, ['Do not use if'])
     warn  = extract_warnings(s2)
-    se    = extract_side_effects_from_soup(s2)
-    common_side_effects  = ', '.join(se['common']) if se['common'] else None
-    serious_side_effects = ', '.join(se['serious']) if se['serious'] else None
+    side_effects = extract_side_effects_from_soup(s2)
+    common_side_effects  = side_effects['common']  if side_effects['common']  else None
+    serious_side_effects = side_effects['serious'] if side_effects['serious'] else None
     over = extract_section(s2, ['If you take too much','Overdose'])
 
     # === Interactions ===
