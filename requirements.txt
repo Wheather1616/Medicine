@@ -1,0 +1,9 @@
+# Medicine Flask app requirements
+# Tested on Python 3.10+ (Ubuntu 22.04). Pin exact versions with `pip freeze` if you want reproducible deploys.
+
+Flask>=2.2,<3
+requests>=2.28,<3
+beautifulsoup4>=4.12,<5
+lxml>=4.9,<5         # optional but speeds/parses HTML robustly
+gunicorn>=20.1,<21   # production WSGI server
+python-dotenv>=1.0,<2  # optional: load env vars from .env locally
