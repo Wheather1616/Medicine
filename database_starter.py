@@ -1,15 +1,8 @@
 import sqlite3
 import os
 
-# Define the iCloud Drive path
-icloud_path = os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs")
-
-# Ensure it exists
-if not os.path.isdir(icloud_path):
-    raise Exception("iCloud Drive folder not found. Make sure iCloud Drive is enabled.")
-
-# Define full database path
-db_path = os.path.join(icloud_path, "Medicine.db")
+# Use a local folder for the database
+db_path = os.path.join(os.path.dirname(__file__), "Medicine.db")
 
 # Create and connect to the database
 conn = sqlite3.connect(db_path)
