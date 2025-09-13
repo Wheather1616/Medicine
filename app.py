@@ -17,7 +17,7 @@ app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
 
 # Paths (override with env vars)
-DB_PATH = os.getenv("MEDICINE_DB_PATH", "/home/ubuntu/med-api/Medicine.db")
+DB_PATH = os.path.join(os.path.dirname(__file__), "Medicine.db")
 PDF_DIR = os.getenv("MEDICINE_PDF_DIR", "/home/ubuntu/med-api/pdfs")
 os.makedirs(PDF_DIR, exist_ok=True)
 
