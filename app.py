@@ -9,6 +9,7 @@ import traceback
 from urllib.parse import urljoin, urlparse
 import string
 
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
@@ -19,6 +20,15 @@ app.logger.setLevel(logging.INFO)
 DB_PATH = os.getenv("MEDICINE_DB_PATH", "/home/ubuntu/med-api/Medicine.db")
 PDF_DIR = os.getenv("MEDICINE_PDF_DIR", "/home/ubuntu/med-api/pdfs")
 os.makedirs(PDF_DIR, exist_ok=True)
+
+
+# friendly root route so nginx -> / returns something
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "status": "ok",
+        "routes": ["/list", "/add?q=...", "/delete?q=...", "/pdf/<filename>"]
+    })
 
 
 def init_db():
@@ -48,6 +58,7 @@ def init_db():
         if "serious_side_effects" not in columns:
             conn.execute("ALTER TABLE medicines ADD COLUMN serious_side_effects TEXT")
 
+init_db()
 
 def extract_section(soup, heading_variants):
     header = None
